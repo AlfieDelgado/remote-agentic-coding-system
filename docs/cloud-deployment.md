@@ -521,10 +521,10 @@ If using managed database:
 
 ```bash
 # Start app with Caddy reverse proxy
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db up -d --build
 
 # View logs
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml logs -f app
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs -f app
 ```
 
 ### Option B: With Local PostgreSQL
@@ -543,8 +543,8 @@ docker compose --profile with-db -f docker-compose.yml -f docker-compose.cloud.y
 ### Monitor Startup
 
 ```bash
-# Watch logs for successful startup
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml logs -f app
+# Watch logs for successful startup (use --profile external-db for remote DB)
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs -f app
 
 # Look for:
 # [App] Starting Remote Coding Agent
@@ -640,18 +640,20 @@ Bot should respond with analysis.
 
 ## 10. Maintenance & Operations
 
+> **Note:** Add `--profile external-db` (for remote database) or `--profile with-db` (for local database) to all commands below.
+
 ### View Logs
 
 ```bash
-# All services
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml logs -f
+# All services (add your profile flag)
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs -f
 
 # Specific service
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml logs -f app
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml logs -f caddy
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs -f app
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs -f caddy
 
 # Last 100 lines
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml logs --tail=100 app
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs --tail=100 app
 ```
 
 ### Update Application
@@ -661,37 +663,39 @@ docker compose -f docker-compose.yml -f docker-compose.cloud.yml logs --tail=100
 cd /remote-coding-agent
 git pull
 
-# Rebuild and restart
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d --build
+# Rebuild and restart (add your profile flag)
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db up -d --build
 
 # Check logs
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml logs -f app
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs -f app
 ```
 
 ### Restart Services
 
 ```bash
-# Restart all services
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml restart
+# Restart all services (add your profile flag)
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db restart
 
 # Restart specific service
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml restart app
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml restart caddy
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db restart app
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db restart caddy
 ```
 
 ### Stop Services
 
 ```bash
-# Stop all services
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml down
+# Stop all services (add your profile flag)
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db down
 
 # Stop and remove volumes (caution: deletes data)
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml down -v
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db down -v
 ```
 
 ---
 
 ## Troubleshooting
+
+> **Note:** Add `--profile external-db` or `--profile with-db` to all docker compose commands below.
 
 ### Caddy Not Getting SSL Certificate
 
@@ -709,7 +713,7 @@ sudo ufw status
 
 **Check Caddy logs:**
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml logs caddy
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs caddy
 # Look for certificate issuance attempts
 ```
 
@@ -723,8 +727,8 @@ docker compose -f docker-compose.yml -f docker-compose.cloud.yml logs caddy
 
 **Check if running:**
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml ps
-# Should show 'app' and 'caddy' with state 'Up'
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db ps
+# Should show 'app' (or 'app-with-db') and 'caddy' with state 'Up'
 ```
 
 **Check health endpoint:**
@@ -735,7 +739,7 @@ curl http://localhost:3000/health
 
 **Check logs:**
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml logs -f app
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs -f app
 ```
 
 ### Database Connection Errors
