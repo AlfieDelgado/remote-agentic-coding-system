@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   }
 
   // Validate AI assistant credentials (warn if missing, don't fail)
-  const hasClaudeCredentials = process.env.CLAUDE_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  const hasClaudeCredentials = process.env.CLAUDE_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
   const hasCodexCredentials = process.env.CODEX_ID_TOKEN && process.env.CODEX_ACCESS_TOKEN;
 
   if (!hasClaudeCredentials && !hasCodexCredentials) {
