@@ -246,7 +246,14 @@ nano .env
 Set these required variables:
 
 ```env
+# Docker Compose shortcuts (optional but recommended)
+# These let you run shorter commands like "docker compose logs" instead of
+# "docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile with-db logs"
+COMPOSE_FILE=docker-compose.yml:docker-compose.cloud.yml
+COMPOSE_PROFILES=with-db
+
 # Database - Use remote managed PostgreSQL
+# (or use local by keeping COMPOSE_PROFILES=with-db and omitting DATABASE_URL)
 DATABASE_URL=postgresql://user:password@host:5432/dbname
 
 # GitHub tokens (same value for both)
@@ -415,6 +422,11 @@ Add:
 ```env
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHI...
 TELEGRAM_STREAMING_MODE=stream  # stream (default) | batch
+
+# Security: Restrict bot to specific users (optional but recommended)
+# Get your User ID by messaging @userinfobot on Telegram
+# Leave empty to allow anyone (public mode)
+TELEGRAM_ALLOWED_USER_IDS=123456789
 ```
 
 **For detailed Telegram setup, see [Platform Setup](../README.md#3-platform-adapter-setup-choose-at-least-one).**
@@ -540,6 +552,14 @@ docker compose --profile with-db -f docker-compose.yml -f docker-compose.cloud.y
 docker compose --profile with-db -f docker-compose.yml -f docker-compose.cloud.yml logs -f postgres
 ```
 
+> **💡 Pro Tip:** If you set `COMPOSE_FILE` and `COMPOSE_PROFILES` in your `.env` (see Section 4.1), you can use shorter commands:
+> ```bash
+> # Shorter commands with env vars set
+> docker compose up -d --build
+> docker compose logs -f app
+> docker compose logs -f postgres
+> ```
+
 ### Monitor Startup
 
 ```bash
@@ -640,20 +660,22 @@ Bot should respond with analysis.
 
 ## 10. Maintenance & Operations
 
-> **Note:** Add `--profile external-db` (for remote database) or `--profile with-db` (for local database) to all commands below.
+> **💡 Pro Tip:** If you set `COMPOSE_FILE` and `COMPOSE_PROFILES` in your `.env` (see Section 4.1), you can use shorter commands like `docker compose logs` instead of the full commands below.
+>
+> Otherwise, add `--profile external-db` (for remote database) or `--profile with-db` (for local database) to all commands below.
 
 ### View Logs
 
 ```bash
-# All services (add your profile flag)
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs -f
+# All services (shorter with env vars, otherwise use --profile flag)
+docker compose logs -f
 
 # Specific service
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs -f app
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs -f caddy
+docker compose logs -f app
+docker compose logs -f caddy
 
 # Last 100 lines
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs --tail=100 app
+docker compose logs --tail=100 app
 ```
 
 ### Update Application
@@ -663,39 +685,39 @@ docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile exter
 cd /remote-coding-agent
 git pull
 
-# Rebuild and restart (add your profile flag)
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db up -d --build
+# Rebuild and restart
+docker compose up -d --build
 
 # Check logs
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs -f app
+docker compose logs -f app
 ```
 
 ### Restart Services
 
 ```bash
-# Restart all services (add your profile flag)
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db restart
+# Restart all services
+docker compose restart
 
 # Restart specific service
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db restart app
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db restart caddy
+docker compose restart app
+docker compose restart caddy
 ```
 
 ### Stop Services
 
 ```bash
-# Stop all services (add your profile flag)
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db down
+# Stop all services
+docker compose down
 
 # Stop and remove volumes (caution: deletes data)
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db down -v
+docker compose down -v
 ```
 
 ---
 
 ## Troubleshooting
 
-> **Note:** Add `--profile external-db` or `--profile with-db` to all docker compose commands below.
+> **💡 Pro Tip:** If you set `COMPOSE_FILE` and `COMPOSE_PROFILES` in your `.env`, use shorter commands like `docker compose logs` below.
 
 ### Caddy Not Getting SSL Certificate
 
@@ -713,7 +735,7 @@ sudo ufw status
 
 **Check Caddy logs:**
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs caddy
+docker compose logs caddy
 # Look for certificate issuance attempts
 ```
 
@@ -727,7 +749,7 @@ docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile exter
 
 **Check if running:**
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db ps
+docker compose ps
 # Should show 'app' (or 'app-with-db') and 'caddy' with state 'Up'
 ```
 
@@ -739,7 +761,7 @@ curl http://localhost:3000/health
 
 **Check logs:**
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml --profile external-db logs -f app
+docker compose logs -f app
 ```
 
 ### Database Connection Errors

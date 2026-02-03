@@ -173,8 +173,37 @@ async function main(): Promise<void> {
   const streamingMode = (process.env.TELEGRAM_STREAMING_MODE || 'stream') as 'stream' | 'batch';
   const telegram = new TelegramAdapter(process.env.TELEGRAM_BOT_TOKEN!, streamingMode);
 
+  // Setup Telegram user authorization (whitelist)
+  const allowedUserIds = (process.env.TELEGRAM_ALLOWED_USER_IDS || '')
+    .split(',')
+    .map(id => id.trim())
+    .filter(id => id);
+
+  function isUserAuthorized(userId: number): boolean {
+    // If no whitelist is configured, allow everyone (current behavior)
+    if (allowedUserIds.length === 0) {
+      return true;
+    }
+    // Check if user ID is in the whitelist
+    return allowedUserIds.includes(userId.toString());
+  }
+
+  // Log authorization mode on startup
+  if (allowedUserIds.length > 0) {
+    console.log(`[Telegram] Whitelist mode enabled - ${allowedUserIds.length} authorized user(s)`);
+  } else {
+    console.log('[Telegram] Public mode enabled - all users can interact with the bot');
+  }
+
   // Handle text messages
   telegram.getBot().on('text', async ctx => {
+    // Authorization check: Only allow whitelisted users (if whitelist is configured)
+    if (!isUserAuthorized(ctx.from.id)) {
+      console.warn(`[Telegram] Unauthorized access attempt from user ${ctx.from.id} (username: ${ctx.from.username || 'none'})`);
+      // Silently ignore the message - don't send any response
+      return;
+    }
+
     const conversationId = telegram.getConversationId(ctx);
     const message = ctx.message.text;
 

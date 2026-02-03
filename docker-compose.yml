@@ -49,8 +49,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql
       - ./migrations:/docker-entrypoint-initdb.d
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+    # SECURITY: Port removed - postgres only accessible internally via Docker network
+    # Use "docker compose exec postgres psql -U postgres -d remote_coding_agent" for debugging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
