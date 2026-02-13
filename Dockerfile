@@ -1,22 +1,31 @@
-FROM node:20-slim
+FROM ubuntu:24.04
+
 
 # Prevent interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    bash \
-    ca-certificates \
-    gnupg \
-    postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install GitHub CLI
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+# Install all system dependencies, Python, Node.js, and GitHub CLI in one layer
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        git \
+        bash \
+        ca-certificates \
+        gnupg \
+        postgresql-client \
+        software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3.13 \
+        python3-pip \
+        python3.13-venv \
+    && ln -sf /usr/bin/python3.13 /usr/local/bin/python \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
     && apt-get update \
@@ -58,6 +67,9 @@ RUN mkdir -p /home/appuser/.codex
 # are performed in mounted volumes or repos cloned by different users
 RUN git config --global --add safe.directory /workspace && \
     git config --global --add safe.directory '/workspace/*'
+
+# Add local bin to PATH
+ENV PATH="${PATH}:/home/appuser/.codex/bin:/home/appuser/.local/bin"
 
 # Expose port
 EXPOSE 3000

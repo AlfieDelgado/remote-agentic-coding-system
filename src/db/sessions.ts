@@ -48,3 +48,65 @@ export async function updateSessionMetadata(
     [JSON.stringify(metadata), id]
   );
 }
+
+/**
+ * Store running process information in session metadata
+ */
+export async function setRunningProcess(
+  sessionId: string,
+  pid: number,
+  command: string
+): Promise<void> {
+  const session = await pool.query<Session>(
+    'SELECT metadata FROM remote_agent_sessions WHERE id = $1',
+    [sessionId]
+  );
+
+  const currentMetadata = (session.rows[0]?.metadata as Record<string, unknown>) || {};
+  const updatedMetadata = {
+    ...currentMetadata,
+    runningProcess: { pid, command },
+  };
+
+  await pool.query(
+    'UPDATE remote_agent_sessions SET metadata = $1::jsonb WHERE id = $2',
+    [JSON.stringify(updatedMetadata), sessionId]
+  );
+}
+
+/**
+ * Get running process information from session metadata
+ */
+export async function getRunningProcess(
+  sessionId: string
+): Promise<{ pid: number; command: string } | null> {
+  const result = await pool.query<Session>(
+    'SELECT metadata FROM remote_agent_sessions WHERE id = $1',
+    [sessionId]
+  );
+
+  const metadata = result.rows[0]?.metadata as Record<string, unknown>;
+  const runningProcess = metadata?.runningProcess as
+    | { pid: number; command: string }
+    | undefined;
+
+  return runningProcess || null;
+}
+
+/**
+ * Clear running process information from session metadata
+ */
+export async function clearRunningProcess(sessionId: string): Promise<void> {
+  const session = await pool.query<Session>(
+    'SELECT metadata FROM remote_agent_sessions WHERE id = $1',
+    [sessionId]
+  );
+
+  const currentMetadata = (session.rows[0]?.metadata as Record<string, unknown>) || {};
+  const { runningProcess, ...remainingMetadata } = currentMetadata;
+
+  await pool.query(
+    'UPDATE remote_agent_sessions SET metadata = $1::jsonb WHERE id = $2',
+    [JSON.stringify(remainingMetadata), sessionId]
+  );
+}

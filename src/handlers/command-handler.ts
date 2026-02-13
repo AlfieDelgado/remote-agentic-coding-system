@@ -2,7 +2,7 @@
  * Command handler for slash commands
  * Handles deterministic operations without AI
  */
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { readFile, writeFile, readdir, access } from 'fs/promises';
 import { join, basename } from 'path';
@@ -92,6 +92,12 @@ Codebase:
   /getcwd - Show working directory
   /setcwd <path> - Set directory
   Note: Codebases use full paths (e.g., /workspace/repo-name)
+
+Development:
+  /pytest [args] - Run Python tests
+  /jest [args] - Run JavaScript/TypeScript tests
+  /start-app <command> - Start application (e.g., python -m uvicorn main:app)
+  /kill-app - Stop running application
 
 Session:
   /status - Show state
@@ -331,7 +337,10 @@ Session:
         const markdownFiles = await findMarkdownFilesRecursive(fullPath);
 
         if (!markdownFiles.length) {
-          return { success: false, message: `No .md files found in ${folderPath} (searched recursively)` };
+          return {
+            success: false,
+            message: `No .md files found in ${folderPath} (searched recursively)`,
+          };
         }
 
         const commands = await codebaseDb.getCodebaseCommands(conversation.codebase_id);
@@ -424,6 +433,192 @@ Session:
         success: true,
         message: 'No active session to reset.',
       };
+    }
+
+    case 'pytest': {
+      if (!conversation.cwd) {
+        return {
+          success: false,
+          message: 'No working directory set. Use /clone or /setcwd first.',
+        };
+      }
+
+      const pytestArgs = args.join(' ');
+      const command = `python3.13 -m pytest ${pytestArgs}`;
+
+      console.log('[Command] Running pytest', { cwd: conversation.cwd, args: pytestArgs });
+
+      try {
+        const { stdout, stderr } = await execAsync(command, {
+          cwd: conversation.cwd,
+        });
+        const output = stdout || stderr;
+        return { success: true, message: output || 'pytest completed with no output.' };
+      } catch (error) {
+        const err = error as { stdout?: string; stderr?: string; message: string };
+        const output = err.stdout || err.stderr || err.message;
+        console.error('[Command] pytest failed:', err);
+        return { success: false, message: output };
+      }
+    }
+
+    case 'jest': {
+      if (!conversation.cwd) {
+        return {
+          success: false,
+          message: 'No working directory set. Use /clone or /setcwd first.',
+        };
+      }
+
+      // Detect whether to use npm test or npx jest
+      const jestArgs = args.join(' ');
+      let command: string;
+
+      try {
+        // Check if package.json exists with test script
+        const packageJsonPath = join(conversation.cwd, 'package.json');
+        await access(packageJsonPath);
+        // Use npm test if package.json exists
+        command = `npm test ${jestArgs}`;
+      } catch {
+        // Fall back to npx jest
+        command = `npx jest ${jestArgs}`;
+      }
+
+      console.log('[Command] Running jest', { cwd: conversation.cwd, command });
+
+      try {
+        const { stdout, stderr } = await execAsync(command, {
+          cwd: conversation.cwd,
+        });
+        const output = stdout || stderr;
+        return { success: true, message: output || 'jest completed with no output.' };
+      } catch (error) {
+        const err = error as { stdout?: string; stderr?: string; message: string };
+        const output = err.stdout || err.stderr || err.message;
+        console.error('[Command] jest failed:', err);
+        return { success: false, message: output };
+      }
+    }
+
+    case 'start-app': {
+      if (!conversation.cwd) {
+        return {
+          success: false,
+          message: 'No working directory set. Use /clone or /setcwd first.',
+        };
+      }
+
+      if (args.length === 0) {
+        return {
+          success: false,
+          message:
+            'Usage: /start-app <command>\nExample: /start-app python -m uvicorn main:app --reload',
+        };
+      }
+
+      const appCommand = args.join(' ');
+
+      // Get or create session for tracking process
+      let session = await sessionDb.getActiveSession(conversation.id);
+      if (!session) {
+        session = await sessionDb.createSession({
+          conversation_id: conversation.id,
+          codebase_id: conversation.codebase_id || undefined,
+          ai_assistant_type: conversation.ai_assistant_type,
+        });
+      }
+
+      // Check if there's already a running process
+      const existingProcess = await sessionDb.getRunningProcess(session.id);
+      if (existingProcess) {
+        return {
+          success: false,
+          message: `An app is already running (PID: ${existingProcess.pid}).\nUse /kill-app to stop it first.`,
+        };
+      }
+
+      console.log('[Command] Starting application', { cwd: conversation.cwd, command: appCommand });
+
+      try {
+        // Spawn process in background with shell for proper command parsing
+        const child = spawn(appCommand, [], {
+          cwd: conversation.cwd,
+          shell: true,
+          detached: false,
+        });
+
+        // Capture initial output for error detection
+        let initialOutput = '';
+        const outputTimeout = setTimeout(() => {
+          child.removeAllListeners();
+        }, 5000); // 5 seconds to capture initial output
+
+        child.stdout?.on('data', (data: Buffer) => {
+          const text = data.toString();
+          initialOutput += text;
+        });
+
+        child.stderr?.on('data', (data: Buffer) => {
+          const text = data.toString();
+          initialOutput += text;
+        });
+
+        child.on('error', (error: Error) => {
+          clearTimeout(outputTimeout);
+          console.error('[Command] App process error:', error);
+        });
+
+        // Store process info in session metadata
+        await sessionDb.setRunningProcess(session.id, child.pid ?? 0, appCommand);
+
+        clearTimeout(outputTimeout);
+
+        return {
+          success: true,
+          message: `Application started!\n\nPID: ${child.pid}\nCommand: ${appCommand}\n\nUse /kill-app to stop it.\n\nNote: App output is not streamed. Check logs separately.`,
+        };
+      } catch (error) {
+        const err = error as Error;
+        console.error('[Command] start-app failed:', err);
+        return { success: false, message: `Failed to start app: ${err.message}` };
+      }
+    }
+
+    case 'kill-app': {
+      const session = await sessionDb.getActiveSession(conversation.id);
+      if (!session) {
+        return { success: false, message: 'No active session found.' };
+      }
+
+      const runningProcess = await sessionDb.getRunningProcess(session.id);
+      if (!runningProcess) {
+        return { success: false, message: 'No running application found for this session.' };
+      }
+
+      console.log('[Command] Killing application', { pid: runningProcess.pid });
+
+      try {
+        // Kill the process
+        process.kill(runningProcess.pid, 'SIGTERM');
+
+        // Clear from session metadata
+        await sessionDb.clearRunningProcess(session.id);
+
+        return {
+          success: true,
+          message: `Application stopped.\n\nKilled PID: ${runningProcess.pid}\nCommand was: ${runningProcess.command}`,
+        };
+      } catch (error) {
+        const err = error as Error;
+        console.error('[Command] kill-app failed:', err);
+        // Still try to clear metadata even if kill failed
+        await sessionDb.clearRunningProcess(session.id);
+        return {
+          success: false,
+          message: `Failed to kill app (PID: ${runningProcess.pid}): ${err.message}\n\nProcess may have already stopped.`,
+        };
+      }
     }
 
     default:

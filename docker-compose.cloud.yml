@@ -22,6 +22,7 @@ services:
     ports: []
     expose:
       - "3000"
+      - "8080"
     restart: unless-stopped
     networks:
       remote-agent-network:
@@ -33,6 +34,7 @@ services:
     ports: []
     expose:
       - "3000"
+      - "8080"
     restart: unless-stopped
     networks:
       remote-agent-network:
