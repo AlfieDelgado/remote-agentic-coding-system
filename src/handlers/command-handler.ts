@@ -5,7 +5,7 @@
 import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { readFile, writeFile, readdir, access } from 'fs/promises';
-import { join, basename } from 'path';
+import { join, basename, dirname } from 'path';
 import { Conversation, CommandResult } from '../types';
 import * as db from '../db/conversations';
 import * as codebaseDb from '../db/codebases';
@@ -94,6 +94,7 @@ Codebase:
   Note: Codebases use full paths (e.g., /workspace/repo-name)
 
 Development:
+  /pip-install <path> - Install Python dependencies in venv (e.g., agents/citali)
   /pytest [args] - Run Python tests
   /jest [args] - Run JavaScript/TypeScript tests
   /start-app <command> - Start application (e.g., python -m uvicorn main:app)
@@ -444,21 +445,127 @@ Session:
       }
 
       const pytestArgs = args.join(' ');
-      const command = `python3.13 -m pytest ${pytestArgs}`;
 
-      console.log('[Command] Running pytest', { cwd: conversation.cwd, args: pytestArgs });
+      // Check for .venv in cwd and optionally in specified path
+      let testPath = conversation.cwd;
+      let venvCheckPaths = [join(conversation.cwd, '.venv')];
+
+      // If first arg looks like a path (not a pytest flag), use it as test path
+      if (args.length > 0 && !args[0].startsWith('-')) {
+        const specifiedPath = args[0];
+        testPath = join(conversation.cwd, specifiedPath);
+        venvCheckPaths = [
+          join(testPath, '.venv'),
+          join(conversation.cwd, '.venv'),
+          join(conversation.cwd, '..', '.venv'),
+        ];
+      } else {
+        venvCheckPaths = [join(conversation.cwd, '.venv'), join(conversation.cwd, '..', '.venv')];
+      }
+
+      let pythonCmd = 'python3.13';
+      let venvNote = '';
+
+      for (const venvPath of venvCheckPaths) {
+        try {
+          await access(join(venvPath, 'bin', 'python'));
+          pythonCmd = join(venvPath, 'bin', 'python');
+          venvNote = ' (using .venv)';
+          break;
+        } catch {
+          // Try next path
+        }
+      }
+
+      // If using venv, ensure pytest is installed
+      if (pythonCmd !== 'python3.13') {
+        console.log('[Command] Ensuring pytest is installed in venv...');
+        await execAsync(`${pythonCmd} -m pip install pytest --break-system-packages`);
+      }
+
+      const command = `${pythonCmd} -m pytest ${testPath} ${pytestArgs}`;
+
+      console.log('[Command] Running pytest', {
+        cwd: conversation.cwd,
+        testPath,
+        python: pythonCmd,
+      });
 
       try {
         const { stdout, stderr } = await execAsync(command, {
           cwd: conversation.cwd,
         });
         const output = stdout || stderr;
-        return { success: true, message: output || 'pytest completed with no output.' };
+        return {
+          success: true,
+          message: (output || 'pytest completed with no output.') + venvNote,
+        };
       } catch (error) {
         const err = error as { stdout?: string; stderr?: string; message: string };
         const output = err.stdout || err.stderr || err.message;
         console.error('[Command] pytest failed:', err);
         return { success: false, message: output };
+      }
+    }
+
+    case 'pip-install': {
+      if (!conversation.cwd) {
+        return {
+          success: false,
+          message: 'No working directory set. Use /clone or /setcwd first.',
+        };
+      }
+
+      if (args.length === 0) {
+        return {
+          success: false,
+          message: 'Usage: /pip-install <path>\nExample: /pip-install agents/citali',
+        };
+      }
+
+      const reqPath = args.join(' '); // e.g., agents/citali or agents/citali/requirements.txt
+      const fullReqPath = join(conversation.cwd, reqPath);
+      const isFile = reqPath.endsWith('.txt');
+      const requirementsPath = isFile ? fullReqPath : join(fullReqPath, 'requirements.txt');
+
+      console.log('[Command] Installing pip dependencies from:', requirementsPath);
+
+      try {
+        // Check if requirements.txt exists
+        await access(requirementsPath);
+
+        // Create venv in the same directory as requirements.txt
+        const venvDir = dirname(requirementsPath);
+        const venvPath = join(venvDir, '.venv');
+
+        // Check if venv exists
+        let venvPython = join(venvPath, 'bin', 'python');
+        let created = false;
+        try {
+          await access(venvPython);
+        } catch {
+          console.log('[Command] Creating venv at:', venvPath);
+          await execAsync(`python -m venv ${venvPath}`);
+          venvPython = join(venvPath, 'bin', 'python');
+          created = true;
+        }
+
+        // Install requirements (always reinstall to pick up changes)
+        console.log('[Command] Installing packages...');
+        await execAsync(
+          `${venvPython} -m pip install -U -r ${requirementsPath} --break-system-packages`
+        );
+
+        const message = created
+          ? `✅ Created virtual environment at ${reqPath}/.venv\n✅ Installed dependencies from ${reqPath}/requirements.txt`
+          : `✅ Installed dependencies from ${reqPath}/requirements.txt (using existing venv)`;
+
+        console.log('[Command] pip install completed');
+        return { success: true, message: message };
+      } catch (error) {
+        const err = error as { message: string };
+        console.error('[Command] pip-install failed:', err);
+        return { success: false, message: `Failed to install dependencies: ${err.message}` };
       }
     }
 
@@ -541,42 +648,109 @@ Session:
       console.log('[Command] Starting application', { cwd: conversation.cwd, command: appCommand });
 
       try {
-        // Spawn process in background with shell for proper command parsing
-        const child = spawn(appCommand, [], {
+        // Build list of possible requirements.txt locations
+        const possiblePaths: string[] = [join(conversation.cwd, 'requirements.txt')];
+
+        // If using module path (e.g., python -m agents.citali.main), add those paths too
+        const moduleMatch = appCommand.match(/python\s+-m\s+([\w.]+)/);
+        if (moduleMatch) {
+          const modulePath = moduleMatch[1];
+          const moduleParts = modulePath.split('.');
+          possiblePaths.unshift(
+            // agents/citali/requirements.txt (for agents.citali structure)
+            join(conversation.cwd, moduleParts[0], moduleParts[1], 'requirements.txt'),
+            // main/requirements.txt (for python -m main)
+            join(conversation.cwd, modulePath, 'requirements.txt')
+          );
+        }
+
+        // Find first existing requirements.txt
+        let requirementsPath: string | null = null;
+        for (const path of possiblePaths) {
+          try {
+            await access(path);
+            requirementsPath = path;
+            break;
+          } catch {
+            // Try next path
+          }
+        }
+
+        let pythonPath = 'python';
+        let venvMessage = '';
+
+        if (requirementsPath) {
+          const venvPath = join(dirname(requirementsPath), '.venv');
+          const venvDir = dirname(requirementsPath);
+
+          // Check if venv exists
+          let venvPython = join(venvPath, 'bin', 'python');
+          try {
+            await access(venvPython);
+            console.log('[Command] Using existing venv:', venvPath);
+          } catch {
+            // Create venv
+            console.log('[Command] Creating venv at:', venvPath);
+            await execAsync(`python -m venv ${venvPath}`);
+            venvPython = join(venvPath, 'bin', 'python');
+            venvMessage = `\n📦 Created virtual environment at ${basename(venvDir)}/.venv`;
+          }
+
+          // Install requirements
+          console.log('[Command] Installing requirements from:', requirementsPath);
+          const installResult = await execAsync(
+            `${venvPython} -m pip install -r ${requirementsPath} --break-system-packages`
+          );
+          if (installResult.stdout) {
+            console.log('[Command] pip install output:', installResult.stdout);
+          }
+          venvMessage += `\n✅ Installed dependencies from ${basename(venvDir)}/requirements.txt`;
+
+          pythonPath = venvPath + '/bin/python';
+        }
+
+        // Replace 'python' with venv python path if applicable
+        const finalCommand =
+          pythonPath !== 'python' ? appCommand.replace(/^python\s+/, pythonPath + ' ') : appCommand;
+
+        // Spawn process
+        const child = spawn(finalCommand, [], {
           cwd: conversation.cwd,
           shell: true,
           detached: false,
+          stdio: ['ignore', 'pipe', 'pipe'],
         });
 
-        // Capture initial output for error detection
-        let initialOutput = '';
-        const outputTimeout = setTimeout(() => {
-          child.removeAllListeners();
-        }, 5000); // 5 seconds to capture initial output
+        // Capture output
+        let stdout = '';
+        let stderr = '';
 
         child.stdout?.on('data', (data: Buffer) => {
-          const text = data.toString();
-          initialOutput += text;
+          stdout += data.toString();
         });
 
         child.stderr?.on('data', (data: Buffer) => {
-          const text = data.toString();
-          initialOutput += text;
+          stderr += data.toString();
         });
 
-        child.on('error', (error: Error) => {
-          clearTimeout(outputTimeout);
-          console.error('[Command] App process error:', error);
-        });
+        // Wait briefly to capture startup output
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Check if process exited immediately
+        if (child.exitCode !== null) {
+          const output = stdout || stderr || `Process exited with code: ${child.exitCode}`;
+          return {
+            success: false,
+            message: `Failed to start application:${venvMessage}\n\n${output}`,
+          };
+        }
 
         // Store process info in session metadata
         await sessionDb.setRunningProcess(session.id, child.pid ?? 0, appCommand);
 
-        clearTimeout(outputTimeout);
-
         return {
           success: true,
-          message: `Application started!\n\nPID: ${child.pid}\nCommand: ${appCommand}\n\nUse /kill-app to stop it.\n\nNote: App output is not streamed. Check logs separately.`,
+          message: `Application started!${venvMessage}\n\nPID: ${child.pid}\nCommand: ${appCommand}\n\nOutput:\n${stdout || stderr || '(no output)'}\n\nUse /kill-app to stop it.`,
         };
       } catch (error) {
         const err = error as Error;
