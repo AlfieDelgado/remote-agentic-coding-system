@@ -14,6 +14,48 @@ import * as sessionDb from '../db/sessions';
 const execAsync = promisify(exec);
 
 /**
+ * Run a command and capture stdout/stderr using spawn (for full output)
+ */
+async function runCommand(command: string, cwd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, [], {
+      cwd,
+      shell: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    child.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    child.on('close', code => {
+      if (code === 0) {
+        resolve(stdout || stderr);
+      } else {
+        const err = new Error(stderr || stdout || `Command exited with code ${code}`) as Error & {
+          stdout?: string;
+          stderr?: string;
+        };
+        err.stdout = stdout;
+        err.stderr = stderr;
+        reject(err);
+      }
+    });
+
+    child.on('error', err => {
+      reject(err);
+    });
+  });
+}
+
+/**
  * Recursively find all .md files in a directory and its subdirectories
  */
 async function findMarkdownFilesRecursive(
@@ -577,31 +619,87 @@ Session:
         };
       }
 
-      // Detect whether to use npm test or npx jest
       const jestArgs = args.join(' ');
-      let command: string;
 
-      try {
-        // Check if package.json exists with test script
-        const packageJsonPath = join(conversation.cwd, 'package.json');
-        await access(packageJsonPath);
-        // Use npm test if package.json exists
-        command = `npm test ${jestArgs}`;
-      } catch {
-        // Fall back to npx jest
-        command = `npx jest ${jestArgs}`;
+      // Check for package.json starting from cwd or specified path
+      let pkgCheckPaths: string[] = [];
+
+      // If first arg looks like a path (not a jest flag), find package.json from there
+      if (args.length > 0 && !args[0].startsWith('-')) {
+        const specifiedPath = args[0];
+        const fullTestPath = join(conversation.cwd, specifiedPath);
+        // Search package.json from test directory upward
+        pkgCheckPaths = [
+          join(fullTestPath, 'package.json'),
+          join(conversation.cwd, 'package.json'),
+          join(conversation.cwd, '..', 'package.json'),
+        ];
+      } else {
+        pkgCheckPaths = [
+          join(conversation.cwd, 'package.json'),
+          join(conversation.cwd, '..', 'package.json'),
+        ];
       }
 
-      console.log('[Command] Running jest', { cwd: conversation.cwd, command });
+      // Find first existing package.json
+      let packageJsonPath: string | null = null;
+      for (const path of pkgCheckPaths) {
+        try {
+          await access(path);
+          packageJsonPath = path;
+          console.log('[Command] Found package.json at:', path);
+          break;
+        } catch {
+          // Try next path
+        }
+      }
+
+      if (!packageJsonPath) {
+        return {
+          success: false,
+          message: 'No package.json found. Cannot run Jest tests.',
+        };
+      }
+
+      // Read package.json to get the test script
+      const pkgDir = dirname(packageJsonPath);
+      let workingDir = pkgDir;
+
+      console.log('[Command] Running npm install in:', pkgDir);
+      try {
+        const installOutput = await runCommand('npm install', pkgDir);
+        console.log('[Command] npm install output:', installOutput);
+      } catch (err) {
+        console.log('[Command] npm install warning:', err);
+      }
+
+      // Read package.json to get test script command
+      let jestCommand = 'npx jest';
+      try {
+        const pkgContent = await readFile(packageJsonPath, 'utf-8');
+        const pkg = JSON.parse(pkgContent);
+        if (pkg.scripts?.test) {
+          // Use the exact test command from package.json
+          // Replace 'test' placeholder with actual command
+          jestCommand = pkg.scripts.test;
+          console.log('[Command] Using test script:', jestCommand);
+        }
+      } catch (err) {
+        console.log('[Command] Could not read package.json:', err);
+      }
+      // Pass remaining args after the path (no special flag handling - keep it simple)
+      const remainingArgs =
+        args.length > 0 && !args[0].startsWith('-') ? args.slice(1).join(' ') : jestArgs;
+
+      // Build full command - add -- separator if there are remaining args
+      const command = remainingArgs ? `${jestCommand} -- ${remainingArgs}`.trim() : jestCommand;
+      console.log('[Command] Running jest directly', { workingDir, command });
 
       try {
-        const { stdout, stderr } = await execAsync(command, {
-          cwd: conversation.cwd,
-        });
-        const output = stdout || stderr;
+        const output = await runCommand(command, workingDir);
         return { success: true, message: output || 'jest completed with no output.' };
       } catch (error) {
-        const err = error as { stdout?: string; stderr?: string; message: string };
+        const err = error as Error & { stdout?: string; stderr?: string };
         const output = err.stdout || err.stderr || err.message;
         console.error('[Command] jest failed:', err);
         return { success: false, message: output };
