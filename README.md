@@ -1,12 +1,12 @@
 # Dynamous Remote Coding Agent
 
-Control AI coding assistants (Claude Code, Codex) remotely from Telegram, GitHub, and more. Built for developers who want to code from anywhere with persistent sessions and flexible workflows/systems.
+Control AI coding assistants (Claude Code, Codex) remotely from Telegram, Slack, GitHub, and more. Built for developers who want to code from anywhere with persistent sessions and flexible workflows/systems.
 
 **Quick Start:** [Core Configuration](#1-core-configuration-required) • [AI Assistant Setup](#2-ai-assistant-setup-choose-at-least-one) • [Platform Setup](#3-platform-adapter-setup-choose-at-least-one) • [Start the App](#4-start-the-application) • [Usage Guide](#usage)
 
 ## Features
 
-- **Multi-Platform Support**: Interact via Telegram, GitHub issues/PRs, and more in the future
+- **Multi-Platform Support**: Interact via Telegram, Slack, GitHub issues/PRs, and more
 - **Multiple AI Assistants**: Choose between Claude Code or Codex (or both)
 - **Persistent Sessions**: Sessions survive container restarts with full context preservation
 - **Codebase Management**: Clone and work with any GitHub repository
@@ -23,7 +23,7 @@ Control AI coding assistants (Claude Code, Codex) remotely from Telegram, GitHub
 **Accounts Required:**
 - GitHub account (for repository cloning via `/clone` command)
 - At least one of: Claude Pro/Max subscription OR Codex account
-- At least one of: Telegram account OR GitHub account (for interaction)
+- At least one of: Telegram account OR Slack workspace OR GitHub account (for interaction)
 
 ---
 
@@ -228,6 +228,152 @@ TELEGRAM_STREAMING_MODE=stream  # stream (default) | batch
 ```
 
 **For streaming mode details, see [Advanced Configuration](#advanced-configuration).**
+
+**Message Formatting:**
+- Bot uses HTML for **rich markdown rendering**
+- Code blocks are properly formatted with syntax highlighting
+- Bold, italic, links, and other markdown are rendered beautifully
+- Long messages are automatically split while preserving formatting
+
+**Example rendered output:**
+```typescript
+// AI responses will look like this:
+function analyzeCode() {
+  return "Code blocks with syntax highlighting!";
+}
+```
+
+</details>
+
+<details>
+<summary><b>💬 Slack</b></summary>
+
+**Requirements:**
+- Slack Workspace with admin permissions
+- Public endpoint for events (see ngrok setup below for local development)
+
+**Step 1: Create Slack App**
+
+1. Visit [api.slack.com/apps](https://api.slack.com/apps) and click "Create New App"
+2. Choose "From scratch"
+3. Enter app name (e.g., "Remote Coding Agent")
+4. Select your workspace
+5. Click "Create App"
+
+**Step 2: Configure Bot Permissions**
+
+1. In your app settings, navigate to "OAuth & Permissions"
+2. Scroll to "Scopes" and add these **Bot Token Scopes**:
+   - `chat:write` - Send messages to channels
+   - `channels:history` - Read messages in public channels
+   - `groups:history` - Read messages in private channels
+   - `im:history` - Read direct messages
+   - `mpim:history` - Read group direct messages
+
+**Step 3: Install App to Workspace**
+
+1. Scroll to "OAuth Tokens for Your Workspace"
+2. Click "Install to Workspace"
+3. Review permissions and click "Allow"
+4. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
+
+**Step 4: Enable Events API**
+
+1. In your app settings, go to "Event Subscriptions"
+2. Toggle "Enable Events" to **On**
+3. Set "Request URL" based on your environment:
+   - **Local:** `https://abc123.ngrok-free.app/webhooks/slack`
+   - **Production:** `https://your-domain.com/webhooks/slack`
+
+⚠️ **Note:** You'll need to start your server first before Slack can verify the URL.
+
+4. Under "Subscribe to bot events", add:
+   - `message.channels` - Messages in public channels where bot is a member
+   - `message.groups` - Messages in private channels where bot is a member
+   - `message.im` - Direct messages to the bot
+
+5. Click "Save Changes"
+
+**Step 5: Set Environment Variable**
+
+```env
+SLACK_BOT_TOKEN=xoxb-your-token-here
+```
+
+**Step 6: Configure Streaming (Optional)**
+
+```env
+SLACK_STREAMING_MODE=stream  # stream (default) | batch
+```
+
+**For streaming mode details, see [Advanced Configuration](#advanced-configuration).**
+
+**Step 7: Configure User Whitelist (Optional)**
+
+By default, the bot denies all users (secure by default). You must configure the whitelist to allow access.
+
+**Option A: Allow All Users (Public Mode)**
+```env
+SLACK_ALLOWED_USER_IDS=*
+```
+
+**Option B: Allow Specific Users**
+```env
+SLACK_ALLOWED_USER_IDS=U123456,U789012,UABCDEF
+```
+
+**How to Find Your Slack User ID:**
+1. Open Slack
+2. Click on your profile picture → "Profile"
+3. Click the three dots (...) → "Copy member ID"
+4. Your ID will be in format `U123456789`
+
+**Security Behavior:**
+- **Empty list (default)**: Denies all users (most secure)
+- **"*"**: Allows all users (public mode)
+- **Specific IDs**: Only allows listed users
+
+**Usage:**
+
+**Direct Messages:**
+Simply message the bot directly:
+```
+/help
+/clone https://github.com/user/repo
+What files are in this repo?
+```
+
+**Channel Messages:**
+Mention the bot in channels where it's a member:
+```
+@YourBotName can you analyze this bug?
+@YourBotName /command-invoke prime
+```
+
+**Note:** The bot must be invited to channels first:
+```
+/invite @YourBotName
+```
+
+**First interaction behavior:**
+- For channels: Requires `@YourBotName` mention
+- For DMs: No mention required, just send commands/questions
+- Automatically clones repositories when using `/clone` command
+- Maintains conversation context across messages
+
+**Message Formatting:**
+- Bot uses Slack's Block Kit for **rich markdown rendering**
+- Code blocks are properly formatted with syntax highlighting
+- Bold, italic, lists, and other markdown are rendered beautifully
+- Long messages are automatically split while preserving formatting
+
+**Example rendered output:**
+```typescript
+// AI responses will look like this:
+function analyzeCode() {
+  return "Code blocks with syntax highlighting!";
+}
+```
 
 </details>
 
