@@ -11,18 +11,32 @@ import express from 'express';
 import { TelegramAdapter } from './adapters/telegram';
 import { TestAdapter } from './adapters/test';
 import { GitHubAdapter } from './adapters/github';
+import { SlackAdapter } from './adapters/slack';
 import { handleMessage } from './orchestrator/orchestrator';
 import { pool } from './db/connection';
 import { ConversationLockManager } from './utils/conversation-lock';
+
+// Module-level references for event handlers
+let slack: SlackAdapter | null = null;
+let lockManager: ConversationLockManager;
 
 async function main(): Promise<void> {
   console.log('[App] Starting Remote Coding Agent (Telegram + Claude MVP)');
 
   // Validate required environment variables
-  const required = ['DATABASE_URL', 'TELEGRAM_BOT_TOKEN'];
-  const missing = required.filter(v => !process.env[v]);
-  if (missing.length > 0) {
-    console.error('[App] Missing required environment variables:', missing.join(', '));
+  // At least one platform token is required
+  const hasTelegram = !!process.env.TELEGRAM_BOT_TOKEN;
+  const hasSlack = !!process.env.SLACK_BOT_TOKEN;
+
+  if (!hasTelegram && !hasSlack) {
+    console.error('[App] Missing platform configuration. At least one of TELEGRAM_BOT_TOKEN or SLACK_BOT_TOKEN is required');
+    console.error('[App] Please check .env.example for required configuration');
+    process.exit(1);
+  }
+
+  // Database is always required
+  if (!process.env.DATABASE_URL) {
+    console.error('[App] Missing required environment variable: DATABASE_URL');
     console.error('[App] Please check .env.example for required configuration');
     process.exit(1);
   }
@@ -54,7 +68,7 @@ async function main(): Promise<void> {
 
   // Initialize conversation lock manager
   const maxConcurrent = parseInt(process.env.MAX_CONCURRENT_CONVERSATIONS || '10');
-  const lockManager = new ConversationLockManager(maxConcurrent);
+  lockManager = new ConversationLockManager(maxConcurrent);
   console.log(`[App] Lock manager initialized (max concurrent: ${maxConcurrent})`);
 
   // Initialize test adapter
@@ -68,6 +82,22 @@ async function main(): Promise<void> {
     await github.start();
   } else {
     console.log('[GitHub] Adapter not initialized (missing GITHUB_TOKEN or WEBHOOK_SECRET)');
+  }
+
+  // Initialize Slack adapter (conditional)
+  if (process.env.SLACK_BOT_TOKEN) {
+    const slackStreamingMode = (process.env.SLACK_STREAMING_MODE || 'stream') as 'stream' | 'batch';
+
+    // Setup Slack user authorization (whitelist)
+    const slackAllowedUserIds = (process.env.SLACK_ALLOWED_USER_IDS || '')
+      .split(',')
+      .map(id => id.trim())
+      .filter(id => id);
+
+    slack = new SlackAdapter(process.env.SLACK_BOT_TOKEN, slackStreamingMode, slackAllowedUserIds);
+    await slack.start();
+  } else {
+    console.log('[Slack] Adapter not initialized (missing SLACK_BOT_TOKEN)');
   }
 
   // Setup Express server
@@ -98,6 +128,34 @@ async function main(): Promise<void> {
       }
     });
     console.log('[Express] GitHub webhook endpoint registered');
+  }
+
+  // Slack events endpoint
+  if (slack) {
+    app.post('/webhooks/slack', async (req, res) => {
+      try {
+        // Handle URL verification challenge
+        if (req.body.type === 'url_verification') {
+          return res.status(200).send(req.body.challenge);
+        }
+
+        // Handle events
+        if (req.body.type === 'event_callback') {
+          const event = req.body.event;
+
+          // Process async (fire-and-forget for fast webhook response)
+          handleSlackEvent(event).catch(error => {
+            console.error('[Slack] Event processing error:', error);
+          });
+        }
+
+        return res.status(200).send('OK');
+      } catch (error) {
+        console.error('[Slack] Webhook endpoint error:', error);
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+    console.log('[Express] Slack events endpoint registered');
   }
 
   // JSON parsing for all other endpoints
@@ -245,3 +303,67 @@ main().catch(error => {
   console.error('[App] Fatal error:', error);
   process.exit(1);
 });
+
+/**
+ * Handle Slack events
+ */
+async function handleSlackEvent(event: any): Promise<void> {
+  if (!slack) return;
+
+  // Only process message events
+  if (event.type !== 'message') {
+    return;
+  }
+
+  // Skip messages from bots (including our own)
+  if (event.bot_id || event.subtype === 'bot_message') {
+    return;
+  }
+
+  // Skip messages without text (e.g., file uploads, reactions)
+  if (!event.text) {
+    return;
+  }
+
+  const conversationId = slack.getConversationId(event);
+  const userId = slack.getUserId(event);
+
+  if (!userId) {
+    console.warn('[Slack] Message without user ID, skipping');
+    return;
+  }
+
+  // Authorization check: Only allow whitelisted users
+  if (!slack.isUserAllowed(userId)) {
+    console.warn(`[Slack] Unauthorized access attempt from user ${userId}`);
+    // Silently ignore the message - don't send any response
+    return;
+  }
+
+  // Check if bot is mentioned or if it's a DM
+  const botUserId = slack.getBotUserId();
+  const isBotMentioned = slack.isBotMentioned(event.text, botUserId);
+
+  // For DM channels, we don't need a mention
+  // For public/private channels, we require a bot mention
+  const isDM = event.channel_type === 'im';
+
+  if (!isDM && !isBotMentioned) {
+    console.log('[Slack] Message not directed at bot, skipping');
+    return;
+  }
+
+  // Strip bot mention if present
+  const message = slack.stripMention(event.text, botUserId);
+
+  console.log(`[Slack] Processing message from user ${userId} in ${conversationId}`);
+
+  // Fire-and-forget: handler returns immediately, processing happens async
+  try {
+    await lockManager.acquireLock(conversationId, async () => {
+      await handleMessage(slack!, conversationId, message);
+    });
+  } catch (error) {
+    console.error('[Slack] Failed to process message:', error);
+  }
+}
