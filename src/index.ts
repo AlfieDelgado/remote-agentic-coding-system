@@ -15,6 +15,7 @@ import { SlackAdapter } from './adapters/slack';
 import { handleMessage } from './orchestrator/orchestrator';
 import { pool } from './db/connection';
 import { ConversationLockManager } from './utils/conversation-lock';
+import * as crypto from 'crypto';
 
 // Module-level references for event handlers
 let slack: SlackAdapter | null = null;
@@ -132,16 +133,24 @@ async function main(): Promise<void> {
 
   // Slack events endpoint
   if (slack) {
-    app.post('/webhooks/slack', async (req, res) => {
+    app.post('/webhooks/slack', express.json(), async (req, res) => {
       try {
+        console.log('[Slack] Webhook received:', {
+          type: req.body.type,
+          hasEvent: !!req.body.event,
+          eventType: req.body.event?.type
+        });
+
         // Handle URL verification challenge
         if (req.body.type === 'url_verification') {
+          console.log('[Slack] URL verification challenge received');
           return res.status(200).send(req.body.challenge);
         }
 
         // Handle events
         if (req.body.type === 'event_callback') {
           const event = req.body.event;
+          console.log('[Slack] Event received:', event.type);
 
           // Process async (fire-and-forget for fast webhook response)
           handleSlackEvent(event).catch(error => {
@@ -156,6 +165,114 @@ async function main(): Promise<void> {
       }
     });
     console.log('[Express] Slack events endpoint registered');
+
+    // Slash commands endpoint (separate from events)
+    // CRITICAL: Use express.raw() to preserve raw body for signature verification
+    app.post('/slack/commands', express.raw({ type: 'application/x-www-form-urlencoded' }), async (req, res) => {
+      try {
+        // Verify signature (critical for security)
+        const slackSignature = req.headers['x-slack-signature'] as string;
+        const slackTimestamp = req.headers['x-slack-request-timestamp'] as string;
+        const signingSecret = process.env.SLACK_SIGNING_SECRET;
+
+        if (!slackSignature || !slackTimestamp || !signingSecret) {
+          console.warn('[Slack] Missing security headers');
+          return res.status(403).send('Unauthorized');
+        }
+
+        // Get raw body string for signature verification
+        const rawBody = (req.body as Buffer).toString('utf-8');
+
+        // Verify timestamp (prevent replay attacks)
+        const now = Math.floor(Date.now() / 1000);
+        if (Math.abs(now - parseInt(slackTimestamp)) > 300) {
+          console.warn('[Slack] Timestamp too old');
+          return res.status(403).send('Unauthorized');
+        }
+
+        // Verify signature using HMAC SHA256
+        const baseStr = `v0:${slackTimestamp}:${rawBody}`;
+        const expectedSignature = 'v0=' + crypto
+          .createHmac('sha256', signingSecret)
+          .update(baseStr)
+          .digest('hex');
+
+        if (slackSignature !== expectedSignature) {
+          console.warn('[Slack] Invalid signature');
+          return res.status(403).send('Unauthorized');
+        }
+
+        // Parse form data from raw body
+        const params = new URLSearchParams(rawBody);
+        const command = params.get('command');
+        const text = params.get('text') || '';
+        const userId = params.get('user_id');
+        const channelId = params.get('channel_id');
+        const teamId = params.get('team_id');
+
+        // Map Slack slash commands to internal commands
+        // Slack uses /agent-* prefix to avoid reserved command conflicts
+        const slackToInternalCommand: Record<string, string> = {
+          '/agent-status': '/status',
+          '/agent-clone': '/clone',
+          '/agent-setcwd': '/setcwd',
+          '/agent-getcwd': '/getcwd',
+          '/agent-load-commands': '/load-commands',
+          '/agent-command-invoke': '/command-invoke',
+          '/agent-command-set': '/command-set',
+          '/agent-commands': '/commands',
+          '/agent-repos': '/repos',
+          '/agent-reset': '/reset',
+          '/agent-help': '/help',
+          '/agent-pytest': '/pytest',
+          '/agent-jest': '/jest',
+          '/agent-pip-install': '/pip-install',
+          '/agent-start-app': '/start-app',
+          '/agent-kill-app': '/kill-app',
+        };
+
+        // Translate Slack command to internal command
+        const internalCommand = command ? (slackToInternalCommand[command] || command) : '/help';
+
+        console.log('[Slack] Command received:', { command, text, userId, channelId, teamId });
+
+        // Log command translation for debugging
+        if (command !== internalCommand) {
+          console.log(`[Slack] Translating command: ${command} → ${internalCommand}`);
+        }
+
+        // Authorization check
+        if (userId && !slack!.isUserAllowed(userId!)) {
+          console.warn(`[Slack] Unauthorized command from user ${userId}`);
+          return res.json({
+            response_type: 'ephemeral',
+            text: 'Sorry, you are not authorized to use this bot.'
+          });
+        }
+
+        // Build full command with arguments
+        const fullCommand = internalCommand + (text ? ' ' + text : '');
+
+        // Fire-and-forget: respond immediately, process async
+        // NOTE: The orchestrator handles conversation creation, so we don't need to call db.getOrCreateConversation here
+        lockManager.acquireLock(channelId!, async () => {
+          await handleMessage(slack!, channelId!, fullCommand);
+        }).catch(error => {
+          console.error('[Slack] Command processing error:', error);
+        });
+
+        // Immediate response (required within 3 seconds)
+        return res.json({
+          response_type: 'in_channel',
+          text: `Processing ${internalCommand}...`
+        });
+
+      } catch (error) {
+        console.error('[Slack] Command endpoint error:', error);
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+    console.log('[Express] Slack commands endpoint registered');
   }
 
   // JSON parsing for all other endpoints
@@ -310,8 +427,8 @@ main().catch(error => {
 async function handleSlackEvent(event: any): Promise<void> {
   if (!slack) return;
 
-  // Only process message events
-  if (event.type !== 'message') {
+  // Only process message events and app_mention events
+  if (event.type !== 'message' && event.type !== 'app_mention') {
     return;
   }
 
@@ -322,6 +439,13 @@ async function handleSlackEvent(event: any): Promise<void> {
 
   // Skip messages without text (e.g., file uploads, reactions)
   if (!event.text) {
+    return;
+  }
+
+  // Skip slash commands - they're handled by the /slack/commands endpoint
+  // This prevents duplicate processing when Slack sends both command and message events
+  if (event.text.startsWith('/')) {
+    console.log('[Slack] Skipping slash command in events endpoint (handled by /slack/commands)');
     return;
   }
 
@@ -346,7 +470,9 @@ async function handleSlackEvent(event: any): Promise<void> {
 
   // For DM channels, we don't need a mention
   // For public/private channels, we require a bot mention
-  const isDM = event.channel_type === 'im';
+  // Check both channel_type field and channel ID prefix for robustness
+  const channelId = event.channel || '';
+  const isDM = event.channel_type === 'im' || channelId.startsWith('D');
 
   if (!isDM && !isBotMentioned) {
     console.log('[Slack] Message not directed at bot, skipping');

@@ -251,6 +251,13 @@ function analyzeCode() {
 **Requirements:**
 - Slack Workspace with admin permissions
 - Public endpoint for events (see ngrok setup below for local development)
+- Uses **native slash commands** with autocomplete
+
+**Architecture:** Two-endpoint system
+- `/slack/commands` - Handles native slash commands (`/agent-status`, etc.)
+- `/webhooks/slack` - Handles DMs and bot mentions (`@BotName hello`)
+
+---
 
 **Step 1: Create Slack App**
 
@@ -260,15 +267,20 @@ function analyzeCode() {
 4. Select your workspace
 5. Click "Create App"
 
+---
+
 **Step 2: Configure Bot Permissions**
 
 1. In your app settings, navigate to "OAuth & Permissions"
 2. Scroll to "Scopes" and add these **Bot Token Scopes**:
-   - `chat:write` - Send messages to channels
-   - `channels:history` - Read messages in public channels
-   - `groups:history` - Read messages in private channels
-   - `im:history` - Read direct messages
-   - `mpim:history` - Read group direct messages
+   - `chat:write` - Send messages
+   - `im:history` - Read messages in DMs
+   - `im:write` - Start/reply in DMs
+   - `channels:history` - Read messages in channels
+   - `channels:join` - Join channels
+   - `app_mentions:read` - Read @mentions
+
+---
 
 **Step 3: Install App to Workspace**
 
@@ -277,7 +289,18 @@ function analyzeCode() {
 3. Review permissions and click "Allow"
 4. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
 
-**Step 4: Enable Events API**
+---
+
+**Step 4: Get Signing Secret**
+
+1. In your app settings, go to "Basic Information"
+2. Scroll to "App Credentials"
+3. Find "Signing Secret" → Click "Show"
+4. Copy the secret (format: `a1b2c3d4e5f6g7h8i9j0...`)
+
+---
+
+**Step 5: Enable Events API**
 
 1. In your app settings, go to "Event Subscriptions"
 2. Toggle "Enable Events" to **On**
@@ -288,66 +311,86 @@ function analyzeCode() {
 ⚠️ **Note:** You'll need to start your server first before Slack can verify the URL.
 
 4. Under "Subscribe to bot events", add:
-   - `message.channels` - Messages in public channels where bot is a member
-   - `message.groups` - Messages in private channels where bot is a member
-   - `message.im` - Direct messages to the bot
+   - `message.im` - Messages in DMs
+   - `message.channels` - Messages in channels
+   - `app_mention` - When bot is @mentioned
 
 5. Click "Save Changes"
 
-**Step 5: Set Environment Variable**
+---
+
+**Step 6: Add Slash Commands**
+
+Go to "Slash Commands" and create **16 commands** with these settings:
+
+| Command | Request URL | Description | Usage Hint |
+|--------|-------------|------------|------------|
+| `/agent-status` | `https://your-domain.com/slack/commands` | Show workspace status | `[no args]` |
+| `/agent-clone` | `https://your-domain.com/slack/commands` | Clone repository | `<repo-url>` |
+| `/agent-setcwd` | `https://your-domain.com/slack/commands` | Set working directory | `<path>` |
+| `/agent-getcwd` | `https://your-domain.com/slack/commands` | Show working directory | `[no args]` |
+| `/agent-load-commands` | `https://your-domain.com/slack/commands` | Load commands | `<folder>` |
+| `/agent-command-invoke` | `https://your-domain.com/slack/commands` | Execute command | `<name> [args]` |
+| `/agent-command-set` | `https://your-domain.com/slack/commands` | Register command | `<name> <path>` |
+| `/agent-commands` | `https://your-domain.com/slack/commands` | List commands | `[no args]` |
+| `/agent-repos` | `https://your-domain.com/slack/commands` | List repositories | `[no args]` |
+| `/agent-reset` | `https://your-domain.com/slack/commands` | Reset session | `[no args]` |
+| `/agent-help` | `https://your-domain.com/slack/commands` | Show help | `[no args]` |
+| `/agent-pytest` | `https://your-domain.com/slack/commands` | Run Python tests | `[path] [args]` |
+| `/agent-jest` | `https://your-domain.com/slack/commands` | Run JS tests | `[path] [args]` |
+| `/agent-pip-install` | `https://your-domain.com/slack/commands` | Install Python packages | `<path>` |
+| `/agent-start-app` | `https://your-domain.com/slack/commands` | Start application | `<command>` |
+| `/agent-kill-app` | `https://your-domain.com/slack/commands` | Stop application | `[no args]` |
+
+**Request URL:** Use your deployed URL or ngrok URL with `/slack/commands` path.
+
+---
+
+**Step 7: Set Environment Variables**
 
 ```env
+# From Step 3
 SLACK_BOT_TOKEN=xoxb-your-token-here
-```
 
-**Step 6: Configure Streaming (Optional)**
+# From Step 4
+SLACK_SIGNING_SECRET=a1b2c3d4e5f6g7h8i9j0...
 
-```env
+# Streaming mode (optional)
 SLACK_STREAMING_MODE=stream  # stream (default) | batch
-```
 
-**For streaming mode details, see [Advanced Configuration](#advanced-configuration).**
-
-**Step 7: Configure User Whitelist (Optional)**
-
-By default, the bot denies all users (secure by default). You must configure the whitelist to allow access.
-
-**Option A: Allow All Users (Public Mode)**
-```env
-SLACK_ALLOWED_USER_IDS=*
-```
-
-**Option B: Allow Specific Users**
-```env
-SLACK_ALLOWED_USER_IDS=U123456,U789012,UABCDEF
+# User authorization (required)
+SLACK_ALLOWED_USER_IDS=U123456789  # Your user ID, or * for all users
 ```
 
 **How to Find Your Slack User ID:**
 1. Open Slack
-2. Click on your profile picture → "Profile"
-3. Click the three dots (...) → "Copy member ID"
-4. Your ID will be in format `U123456789`
+2. Click your profile picture → "Profile"
+3. Click three dots (...) → "Copy member ID"
+4. Format: `U123456789`
 
-**Security Behavior:**
-- **Empty list (default)**: Denies all users (most secure)
-- **"*"**: Allows all users (public mode)
-- **Specific IDs**: Only allows listed users
+---
 
 **Usage:**
 
-**Direct Messages:**
-Simply message the bot directly:
+| Context | How to interact | Example |
+|---------|-----------------|---------|
+| **DM** | Type commands directly | `/agent-status` |
+| **Channel** | Use slash commands | `/agent-status` |
+| **Channel** | Mention bot for AI | `@BotName hello` |
+
+**Examples:**
+
+**In DM:**
 ```
-/help
-/clone https://github.com/user/repo
+/agent-status
+/agent-clone https://github.com/user/repo
 What files are in this repo?
 ```
 
-**Channel Messages:**
-Mention the bot in channels where it's a member:
+**In Channel:**
 ```
-@YourBotName can you analyze this bug?
-@YourBotName /command-invoke prime
+/agent-status
+@BotName can you help me understand this code?
 ```
 
 **Note:** The bot must be invited to channels first:
@@ -355,25 +398,22 @@ Mention the bot in channels where it's a member:
 /invite @YourBotName
 ```
 
-**First interaction behavior:**
-- For channels: Requires `@YourBotName` mention
-- For DMs: No mention required, just send commands/questions
-- Automatically clones repositories when using `/clone` command
-- Maintains conversation context across messages
+---
 
 **Message Formatting:**
-- Bot uses Slack's Block Kit for **rich markdown rendering**
-- Code blocks are properly formatted with syntax highlighting
-- Bold, italic, lists, and other markdown are rendered beautifully
-- Long messages are automatically split while preserving formatting
+- Native Slack markdown (no conversion needed)
+- Code blocks properly formatted
+- Long messages auto-split (40000 char limit)
 
 **Example rendered output:**
 ```typescript
-// AI responses will look like this:
+// AI responses render beautifully:
 function analyzeCode() {
   return "Code blocks with syntax highlighting!";
 }
 ```
+
+</details>
 
 </details>
 
@@ -547,19 +587,26 @@ docker compose --profile with-db down      # If using Option B
 
 Once your platform adapter is running, you can use these commands:
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `/help` | Show available commands | `/help` |
-| `/clone <url>` | Clone a GitHub repository | `/clone https://github.com/user/repo` |
-| `/repos` | List cloned repositories | `/repos` |
-| `/status` | Show conversation state | `/status` |
-| `/getcwd` | Show current working directory | `/getcwd` |
-| `/setcwd <path>` | Change working directory | `/setcwd /workspace/repo` |
-| `/command-set <name> <path>` | Register a custom command | `/command-set analyze .claude/commands/analyze.md` |
-| `/load-commands <folder>` | Bulk load commands from folder | `/load-commands .claude/commands` |
-| `/command-invoke <name> [args]` | Execute custom command | `/command-invoke plan "Add dark mode"` |
-| `/commands` | List registered commands | `/commands` |
-| `/reset` | Clear active session | `/reset` |
+| Internal Command | Telegram | Slack | Description | Example |
+|-----------------|----------|-------|-------------|---------|
+| `/status` | `/status` | `/agent-status` | Show conversation state | `/status` |
+| `/clone` | `/clone` | `/agent-clone` | Clone a GitHub repository | `/clone https://github.com/user/repo` |
+| `/repos` | `/repos` | `/agent-repos` | List cloned repositories | `/repos` |
+| `/getcwd` | `/getcwd` | `/agent-getcwd` | Show current working directory | `/getcwd` |
+| `/setcwd` | `/setcwd` | `/agent-setcwd` | Change working directory | `/setcwd /workspace/repo` |
+| `/load-commands` | `/load-commands` | `/agent-load-commands` | Bulk load commands from folder | `/load-commands .claude/commands` |
+| `/command-invoke` | `/command-invoke` | `/agent-command-invoke` | Execute custom command | `/command-invoke plan "Add dark mode"` |
+| `/command-set` | `/command-set` | `/agent-command-set` | Register a custom command | `/command-set analyze .claude/commands/analyze.md` |
+| `/commands` | `/commands` | `/agent-commands` | List registered commands | `/commands` |
+| `/reset` | `/reset` | `/agent-reset` | Clear active session | `/reset` |
+| `/help` | `/help` | `/agent-help` | Show available commands | `/help` |
+| `/pytest` | `/pytest` | `/agent-pytest` | Run Python tests | `/pytest [path] [args]` |
+| `/jest` | `/jest` | `/agent-jest` | Run JavaScript tests | `/jest [path] [args]` |
+| `/pip-install` | `/pip-install` | `/agent-pip-install` | Install Python dependencies | `/pip-install <path>` |
+| `/start-app` | `/start-app` | `/agent-start-app` | Start application | `/start-app <command>` |
+| `/kill-app` | `/kill-app` | `/agent-kill-app` | Stop running application | `/kill-app` |
+
+**Note:** Slack uses `/agent-*` prefix to avoid reserved command conflicts. The bot automatically translates these to the internal commands.
 
 ### Example Workflow (Telegram)
 

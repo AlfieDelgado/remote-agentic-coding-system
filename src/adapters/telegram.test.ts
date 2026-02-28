@@ -1,9 +1,8 @@
 /**
- * Unit tests for Telegram adapter
+ * Unit tests for Telegram adapter markdown conversion
  */
 import { TelegramAdapter } from './telegram';
 
-// Mock Telegraf to avoid actual API calls
 jest.mock('telegraf', () => ({
   Telegraf: jest.fn().mockImplementation(() => ({
     telegram: {
@@ -14,21 +13,6 @@ jest.mock('telegraf', () => ({
   })),
 }));
 
-// Mock marked to avoid real markdown parsing
-jest.mock('marked', () => ({
-  marked: {
-    parse: jest.fn((markdown: string) => {
-      // Simple mock conversion for testing
-      return markdown
-        .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-        .replace(/\*(.*?)\*/g, '<i>$1</i>')
-        .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
-        .replace(/`(.*?)`/g, '<code>$1</code>')
-        .replace(/\n/g, '<br>');
-    }),
-  },
-}));
-
 describe('TelegramAdapter', () => {
   let adapter: TelegramAdapter;
 
@@ -36,94 +20,160 @@ describe('TelegramAdapter', () => {
     adapter = new TelegramAdapter('fake-token-for-testing', 'stream');
   });
 
-  describe('HTML formatting', () => {
-    test('should convert markdown bold to HTML', async () => {
+  describe('sendMessage', () => {
+    test('should send message with HTML parse_mode', async () => {
       const bot = adapter.getBot();
-      await adapter.sendMessage('123456', '**bold text**');
+      await adapter.sendMessage('123456', '**bold** text');
 
-      expect(bot.telegram.sendMessage).toHaveBeenCalledWith(
-        123456,
-        '<b>bold text</b>',
-        { parse_mode: 'HTML' }
-      );
-    });
-
-    test('should convert markdown italic to HTML', async () => {
-      const bot = adapter.getBot();
-      await adapter.sendMessage('123456', '*italic text*');
-
-      expect(bot.telegram.sendMessage).toHaveBeenCalledWith(
-        123456,
-        '<i>italic text</i>',
-        { parse_mode: 'HTML' }
-      );
-    });
-
-    test('should convert markdown code blocks to HTML', async () => {
-      const bot = adapter.getBot();
-      await adapter.sendMessage('123456', '```const x = 1;```');
-
-      expect(bot.telegram.sendMessage).toHaveBeenCalledWith(
-        123456,
-        '<pre><code>const x = 1;</code></pre>',
-        { parse_mode: 'HTML' }
-      );
-    });
-
-    test('should convert inline code to HTML', async () => {
-      const bot = adapter.getBot();
-      await adapter.sendMessage('123456', '`code`');
-
-      expect(bot.telegram.sendMessage).toHaveBeenCalledWith(
-        123456,
-        '<code>code</code>',
-        { parse_mode: 'HTML' }
-      );
-    });
-
-    test('should handle mixed formatting', async () => {
-      const bot = adapter.getBot();
-      await adapter.sendMessage('123456', '**bold** and *italic* and `code`');
-
-      expect(bot.telegram.sendMessage).toHaveBeenCalledWith(
-        123456,
-        '<b>bold</b> and <i>italic</i> and <code>code</code>',
-        { parse_mode: 'HTML' }
-      );
+      expect(bot.telegram.sendMessage).toHaveBeenCalledWith(123456, '<b>bold</b> text', {
+        parse_mode: 'HTML',
+      });
     });
   });
 
-  describe('message splitting', () => {
-    test('should send short message without splitting', async () => {
-      const bot = adapter.getBot();
-      await adapter.sendMessage('123456', 'short message');
+  describe('markdownToTelegramHtml', () => {
+    describe('code blocks', () => {
+      test('should convert code blocks with language', () => {
+        expect(adapter.markdownToTelegramHtml('```js\nconst x = 1;\n```')).toBe(
+          '<pre><code class="language-js">const x = 1;</code></pre>'
+        );
+      });
 
-      expect(bot.telegram.sendMessage).toHaveBeenCalledTimes(1);
+      test('should convert code blocks without language', () => {
+        expect(adapter.markdownToTelegramHtml('```\nconst x = 1;\n```')).toBe(
+          '<pre><code>const x = 1;</code></pre>'
+        );
+      });
+
+      test('should preserve code block content with bold inside', () => {
+        const input = '```js\n**not bold**\n```';
+        const output = adapter.markdownToTelegramHtml(input);
+        expect(output).toContain('<pre><code');
+        expect(output).toContain('**not bold**');
+        expect(output).not.toContain('<b>');
+      });
     });
 
-    test('should split long messages', async () => {
-      const bot = adapter.getBot();
-      const longMessage = 'a'.repeat(5000); // Exceeds 4096 char limit
-      await adapter.sendMessage('123456', longMessage);
+    describe('bold and italic', () => {
+      test('should convert bold', () => {
+        expect(adapter.markdownToTelegramHtml('**bold text**')).toBe('<b>bold text</b>');
+      });
 
-      // Should call sendMessage at least once (actual splitting depends on implementation)
-      expect(bot.telegram.sendMessage).toHaveBeenCalled();
+      test('should convert italic with asterisk', () => {
+        expect(adapter.markdownToTelegramHtml('*italic text*')).toBe('<i>italic text</i>');
+      });
+
+      test('should convert italic with underscore', () => {
+        expect(adapter.markdownToTelegramHtml('_italic text_')).toBe('<i>italic text</i>');
+      });
+
+      test('should handle mixed bold and italic', () => {
+        expect(adapter.markdownToTelegramHtml('**bold** and *italic*')).toBe(
+          '<b>bold</b> and <i>italic</i>'
+        );
+      });
+    });
+
+    describe('links', () => {
+      test('should convert links to HTML', () => {
+        expect(adapter.markdownToTelegramHtml('[click here](https://example.com)')).toBe(
+          '<a href="https://example.com">click here</a>'
+        );
+      });
+    });
+
+    describe('headers', () => {
+      test('should convert h1', () => {
+        expect(adapter.markdownToTelegramHtml('# Header 1')).toBe('<b>Header 1</b>');
+      });
+
+      test('should convert h2', () => {
+        expect(adapter.markdownToTelegramHtml('## Header 2')).toBe('<b>Header 2</b>');
+      });
+
+      test('should convert h3', () => {
+        expect(adapter.markdownToTelegramHtml('### Header 3')).toBe('<b>Header 3</b>');
+      });
+    });
+
+    describe('lists', () => {
+      test('should convert unordered list', () => {
+        expect(adapter.markdownToTelegramHtml('- item 1\n- item 2')).toBe('• item 1\n• item 2');
+      });
+
+      test('should convert ordered list', () => {
+        expect(adapter.markdownToTelegramHtml('1. item 1\n2. item 2')).toBe('item 1\n\nitem 2');
+      });
+    });
+
+    describe('tables', () => {
+      test('should convert table to pipe format', () => {
+        const input = `| Command | Description |
+| --- | --- |
+| /clone | Clone repo |`;
+        const output = adapter.markdownToTelegramHtml(input);
+        expect(output).toContain('Command | Description');
+        expect(output).toContain('--- | ---');
+        expect(output).toContain('/clone');
+        expect(output).toContain('Clone repo');
+      });
+
+      test('should handle table with formatting inside', () => {
+        const input = `| Command | Description |
+| --- | --- |
+| \`/clone\` | **Clone** repo |`;
+        const output = adapter.markdownToTelegramHtml(input);
+        expect(output).toContain('/clone');
+        expect(output).toContain('<b>Clone</b>');
+      });
+    });
+
+    describe('inline code', () => {
+      test('should convert inline code', () => {
+        expect(adapter.markdownToTelegramHtml('Use `const x = 1`')).toBe(
+          'Use <code>const x = 1</code>'
+        );
+      });
+
+      test('should preserve code content with markdown inside', () => {
+        expect(adapter.markdownToTelegramHtml('`not **bold**`')).toBe('<code>not **bold**</code>');
+      });
+    });
+
+    describe('paragraphs', () => {
+      test('should add blank lines between paragraphs', () => {
+        const output = adapter.markdownToTelegramHtml('# Header\nSome text');
+        expect(output).toBe('<b>Header</b>\n\nSome text');
+      });
+
+      test('should NOT add blank lines to list items', () => {
+        const output = adapter.markdownToTelegramHtml('- item 1\n- item 2');
+        expect(output).toBe('• item 1\n• item 2');
+      });
+
+      test('should NOT add blank lines to code blocks', () => {
+        const output = adapter.markdownToTelegramHtml('```js\nconst x = 1;\n```');
+        expect(output).toBe('<pre><code class="language-js">const x = 1;</code></pre>');
+      });
+    });
+
+    describe('command help text with angle brackets', () => {
+      test('should handle angle brackets in command examples', () => {
+        const input = 'Use /command-set <name> <path>';
+        const output = adapter.markdownToTelegramHtml(input);
+        expect(output).toBe('Use /command-set &lt;name&gt; &lt;path&gt;');
+      });
     });
   });
 
   describe('streaming mode configuration', () => {
     test('should return batch mode when configured', () => {
-      const batchAdapter = new TelegramAdapter('fake-token-for-testing', 'batch');
+      const batchAdapter = new TelegramAdapter('fake-token', 'batch');
       expect(batchAdapter.getStreamingMode()).toBe('batch');
     });
 
     test('should default to stream mode', () => {
-      const streamAdapter = new TelegramAdapter('fake-token-for-testing');
-      expect(streamAdapter.getStreamingMode()).toBe('stream');
-    });
-
-    test('should return stream mode when explicitly configured', () => {
-      const streamAdapter = new TelegramAdapter('fake-token-for-testing', 'stream');
+      const streamAdapter = new TelegramAdapter('fake-token');
       expect(streamAdapter.getStreamingMode()).toBe('stream');
     });
   });
